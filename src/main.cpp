@@ -3,7 +3,7 @@
 // Configuration
 const int REED_PIN = 5;                      // GPIO5 pour le Reed Switch
 const int PULSES_PER_REV = 4;                // Nombre d'aimants sur le disque
-const unsigned long RPM_CALC_INTERVAL = 200; // Calcul RPM toutes les 200ms
+const unsigned long RPM_CALC_INTERVAL = 1500; // Calcul RPM toutes les 1000ms
 const unsigned long DEBOUNCE_TIME = 10;      // Anti-rebond 10ms
 
 // Variables volatiles (accessibles depuis l'interruption)
