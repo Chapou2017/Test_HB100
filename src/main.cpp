@@ -131,8 +131,8 @@ void loop() {
   }
   
   // Seuil de détection (ajuster selon vos besoins)
-  const double DETECTION_THRESHOLD = 1000.0;  // À ajuster expérimentalement
-  const double MIN_SPEED = 5.0;               // Vitesse minimale en km/h
+  const double DETECTION_THRESHOLD = 1500.0;  // À ajuster expérimentalement
+  const double MIN_SPEED = 2.0;               // Vitesse minimale en km/h
   
   // Mode DEBUG : afficher toutes les valeurs pour diagnostic
   if (DEBUG_MODE) {
