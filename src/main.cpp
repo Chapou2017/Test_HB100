@@ -86,11 +86,16 @@ void setup() {
 
 void loop() {
   // Acquisition des échantillons
+  int minADC = 4095, maxADC = 0;  // Pour détecter saturation
   for (int i = 0; i < SAMPLES; i++) {
     unsigned long startTime = micros();
     
     // Lire le signal depuis ADC ESP32
     int adcValue = analogRead(ADC_PIN);  // 0-4095 (12 bits)
+    
+    // Suivre min/max pour détecter saturation
+    if (adcValue < minADC) minADC = adcValue;
+    if (adcValue > maxADC) maxADC = adcValue;
     
     // Centrer le signal autour de 0 (retirer offset DC)
     // Signal centré à VCC/2 → soustraire 2047 (milieu de 0-4095)
@@ -131,18 +136,27 @@ void loop() {
   }
   
   // Seuil de détection (ajuster selon vos besoins)
-  const double DETECTION_THRESHOLD = 1500.0;  // À ajuster expérimentalement
+  const double DETECTION_THRESHOLD = 1500.0;  // Baissé pour HB100 faible signal
   const double MIN_SPEED = 2.0;               // Vitesse minimale en km/h
   
   // Mode DEBUG : afficher toutes les valeurs pour diagnostic
   if (DEBUG_MODE) {
-    Serial.print("Signal: ");
+    Serial.print("ADC: [");
+    Serial.print(minADC);
+    Serial.print("-");
+    Serial.print(maxADC);
+    Serial.print("] | Signal: ");
     Serial.print(maxMagnitude, 0);
     Serial.print(" | Fréq: ");
     Serial.print(peakFrequency, 1);
     Serial.print(" Hz | Vitesse: ");
     Serial.print(vitesse_kmh, 1);
     Serial.println(" km/h");
+    
+    // Alerte saturation
+    if (minADC < 100 || maxADC > 3995) {
+      Serial.println("⚠️ SATURATION ADC détectée !");
+    }
   }
   
   // Afficher uniquement si signal significatif
