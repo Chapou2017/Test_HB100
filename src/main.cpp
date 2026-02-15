@@ -22,6 +22,9 @@
 #define SAMPLES 1024             // Nombre d'échantillons (puissance de 2)
 #define SAMPLING_FREQUENCY 10000 // 10 kHz - Bien au-dessus de Nyquist pour 3 kHz
 
+// Mode Debug - Affiche toutes les valeurs (même faibles)
+#define DEBUG_MODE true          // Mettre false après calibration
+
 // HB100 opère à 10.525 GHz
 // Formule Doppler: fd = 2 * v * f0 / c
 // où v = vitesse (m/s), f0 = 10.525 GHz, c = 3e8 m/s
@@ -130,6 +133,17 @@ void loop() {
   // Seuil de détection (ajuster selon vos besoins)
   const double DETECTION_THRESHOLD = 1000.0;  // À ajuster expérimentalement
   const double MIN_SPEED = 5.0;               // Vitesse minimale en km/h
+  
+  // Mode DEBUG : afficher toutes les valeurs pour diagnostic
+  if (DEBUG_MODE) {
+    Serial.print("Signal: ");
+    Serial.print(maxMagnitude, 0);
+    Serial.print(" | Fréq: ");
+    Serial.print(peakFrequency, 1);
+    Serial.print(" Hz | Vitesse: ");
+    Serial.print(vitesse_kmh, 1);
+    Serial.println(" km/h");
+  }
   
   // Afficher uniquement si signal significatif
   if (maxMagnitude > DETECTION_THRESHOLD && vitesse_kmh > MIN_SPEED) {
