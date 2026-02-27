@@ -9,6 +9,8 @@
 
 #include <Arduino.h>
 #include "arduinoFFT.h"
+#include <U8g2lib.h>
+#include <SPI.h>
 
 // Désactiver WiFi pour réduire consommation lors de tests sur alimentation ESP32 5V
 #include <WiFi.h>
@@ -39,6 +41,77 @@ ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, SAMPLING_FREQ
 // Timing
 unsigned long samplingPeriodUs;
 unsigned long lastSampleTime = 0;
+
+// Anti-bruit : nombre de détections consécutives requises avant validation
+// NOTE : 1 = réactif (objets rapides), 2 = plus sûr (moins de faux positifs)
+int consecutiveDetections = 0;
+const int REQUIRED_CONFIRMATIONS = 1;
+
+// Fréquences parasites connues à ignorer (ex: bruit secteur 50 Hz et harmoniques)
+// 1770 Hz = bruit identifié, on exclut une plage autour
+#define NOISE_FREQ_MIN 1700.0   // Hz - début zone bruit identifiée
+#define NOISE_FREQ_MAX 1850.0   // Hz - fin zone bruit identifiée
+
+// --- Seuils de détection (calibrer ici) ---
+// Signal bruit < 1200, main ~1360+, ballon estimé > 3000
+#define DETECTION_THRESHOLD 1000.0   // Monter si faux positifs persistent
+#define MIN_SPEED           2.0       // Vitesse minimale en km/h
+
+// --- Correction d'angle ---
+// Capteur placé à 30° de la trajectoire du ballon
+// v_réelle = v_mesurée / cos(angle)
+// cos(0°)=1.000  cos(15°)=0.966  cos(30°)=0.866  cos(45°)=0.707
+#define ANGLE_DEGREES       0.0
+#define ANGLE_CORRECTION    (1.0 / cos(ANGLE_DEGREES * PI / 180.0))  // = 1.155 à 30°
+
+// --- Ecran LCD ST7565R GMG12864-06D (128x64, SPI) ---
+// Pins SPI hardware ESP32 (VSPI) : SCK=18, MOSI=23 (câblés directement)
+#define LCD_CS   5   // Chip Select
+#define LCD_DC   2   // Data/Command (A0 / RS)
+#define LCD_RST  4   // Reset
+// Si l'affichage est vide/inversé, remplacer par : U8G2_ST7565_ERC12864_F_4W_HW_SPI
+U8G2_ST7565_NHD_C12864_F_4W_HW_SPI u8g2(U8G2_R0, LCD_CS, LCD_DC, LCD_RST);
+
+// -------------------------------------------------------
+// Affiche la vitesse en grand sur l'écran LCD
+// Mise en page : nombre centré (police 32px) + "km/h" en petit
+// -------------------------------------------------------
+void displaySpeed(double kmh) {
+  char numStr[8];
+  if (kmh < 100.0) {
+    dtostrf(kmh, 4, 1, numStr);  // ex: " 12.3"
+  } else {
+    dtostrf(kmh, 3, 0, numStr);  // ex: "120"
+  }
+  // Supprimer les espaces en début de chaîne
+  char* num = numStr;
+  while (*num == ' ') num++;
+
+  u8g2.clearBuffer();
+
+  // Vitesse en grand (police 32px, chiffres uniquement)
+  u8g2.setFont(u8g2_font_logisoso32_tn);
+  int numWidth = u8g2.getStrWidth(num);
+  // Centrer le nombre, légèrement décalé à gauche pour laisser place à "km/h"
+  int numX = (128 - numWidth) / 2 - 12;
+  if (numX < 0) numX = 0;
+  u8g2.drawStr(numX, 48, num);
+
+  // Unité "km/h" en petit, alignée à droite du nombre
+  u8g2.setFont(u8g2_font_helvR10_tf);
+  u8g2.drawStr(numX + numWidth + 4, 64, "km/h");
+
+  u8g2.sendBuffer();
+}
+
+// Ecran d'attente
+void displayIdle() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_helvR10_tf);
+  u8g2.drawStr(16, 26, "Radar CDM324");
+  u8g2.drawStr(24, 48, "En attente...");
+  u8g2.sendBuffer();
+}
 
 void setup() {
   Serial.begin(115200);
@@ -80,7 +153,13 @@ void setup() {
   Serial.print(samplingPeriodUs);
   Serial.println(" µs");
   Serial.println("\nPrêt! Envoyez un ballon...\n");
-  
+
+  // Initialisation écran LCD
+  u8g2.begin();
+  u8g2.setContrast(0x28);  // Ajuster si trop clair/sombre (plage 0x00-0xFF)
+  displayIdle();
+  Serial.println("Ecran LCD initialise");
+
   delay(2000);
 }
 
@@ -98,8 +177,8 @@ void loop() {
     if (adcValue > maxADC) maxADC = adcValue;
     
     // Centrer le signal autour de 0 (retirer offset DC)
-    // Signal centré à VCC/2 → soustraire 2047 (milieu de 0-4095)
-    vReal[i] = adcValue - 2048.0;
+    // Valeur mesurée au repos : ~1930 (légèrement sous 2048 à cause des tolérances R5/R6)
+    vReal[i] = adcValue - 1930.0;
     vImag[i] = 0;  // Partie imaginaire à zéro
     
     // Attendre pour respecter la fréquence d'échantillonnage
@@ -107,7 +186,30 @@ void loop() {
       // Attente active
     }
   }
-  
+
+  // PRÉ-FILTRE : vérifier la plage ADC avant de lancer la FFT
+  // Au repos : plage ~40-60 pts | Avec mouvement : plage ~80+ pts
+  int adcRange = maxADC - minADC;
+  const int MIN_ADC_RANGE = 80;  // Seuil : en dessous = pas de mouvement détecté
+
+  if (DEBUG_MODE) {
+    Serial.print("ADC: [");
+    Serial.print(minADC);
+    Serial.print("-");
+    Serial.print(maxADC);
+    Serial.print("] range=");
+    Serial.print(adcRange);
+  }
+
+  if (adcRange < MIN_ADC_RANGE) {
+    if (DEBUG_MODE) Serial.println(" | Pas de mouvement");
+    else Serial.print(".");
+    // Pas de delay ici : cycle rapide pour ne pas rater un objet rapide
+    return;  // Sortir immédiatement, pas de FFT
+  }
+
+  if (DEBUG_MODE) Serial.print(" | FFT...");
+
   // Appliquer une fenêtre de Hamming pour réduire les fuites spectrales
   FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
   
@@ -117,69 +219,75 @@ void loop() {
   // Calculer les magnitudes
   FFT.complexToMagnitude();
   
-  // Trouver la fréquence dominante
-  double peakFrequency = FFT.majorPeak();
-  
-  // Calculer la vitesse
-  // v = fd / coefficient
-  double vitesse_ms = peakFrequency / DOPPLER_COEFF;      // m/s
-  double vitesse_kmh = vitesse_ms * 3.6;                   // km/h
-  
-  // Trouver la magnitude du pic pour évaluer la confiance
+  // Trouver le pic en ignorant DC et très basses fréquences (index 0 et 1)
   double maxMagnitude = 0;
-  int maxIndex = 0;
-  for (int i = 2; i < (SAMPLES / 2); i++) {  // Ignorer DC et très basses fréquences
+  int maxIndex = 2;
+  for (int i = 2; i < (SAMPLES / 2); i++) {
     if (vReal[i] > maxMagnitude) {
       maxMagnitude = vReal[i];
       maxIndex = i;
     }
   }
-  
-  // Seuil de détection (ajuster selon vos besoins)
-  const double DETECTION_THRESHOLD = 1000.0;  // CMD324 plus sensible que HB100
-  const double MIN_SPEED = 2.0;               // Vitesse minimale en km/h
-  
+
+  // Calculer la fréquence du pic depuis son index (cohérent avec maxMagnitude)
+  double peakFrequency = maxIndex * ((double)SAMPLING_FREQUENCY / SAMPLES);
+
+  // Calculer la vitesse
+  double vitesse_ms  = (peakFrequency / DOPPLER_COEFF) * ANGLE_CORRECTION;  // m/s corrigé
+  double vitesse_kmh = vitesse_ms * 3.6;                                      // km/h corrigé
+
+  // Vérifier si la fréquence est dans une zone de bruit connue
+  bool isNoise = (peakFrequency >= NOISE_FREQ_MIN && peakFrequency <= NOISE_FREQ_MAX);
+
   // Mode DEBUG : afficher toutes les valeurs pour diagnostic
   if (DEBUG_MODE) {
-    Serial.print("ADC: [");
-    Serial.print(minADC);
-    Serial.print("-");
-    Serial.print(maxADC);
-    Serial.print("] | Signal: ");
+    Serial.print(" Signal: ");
     Serial.print(maxMagnitude, 0);
     Serial.print(" | Fréq: ");
     Serial.print(peakFrequency, 1);
-    Serial.print(" Hz | Vitesse: ");
+    Serial.print(" Hz");
+    if (isNoise) Serial.print(" [BRUIT]");
+    Serial.print(" | Vitesse: ");
     Serial.print(vitesse_kmh, 1);
-    Serial.println(" km/h");
-    
+    Serial.print(" km/h | Conf: ");
+    Serial.println(consecutiveDetections);
+
     // Alerte saturation
     if (minADC < 100 || maxADC > 3995) {
-      Serial.println("⚠️ SATURATION ADC détectée !");
+      Serial.println("SATURATION ADC detectee !");
     }
   }
-  
-  // Afficher uniquement si signal significatif
-  if (maxMagnitude > DETECTION_THRESHOLD && vitesse_kmh > MIN_SPEED) {
+
+  // Valider la détection : signal fort + vitesse plausible + fréquence non parasite
+  if (maxMagnitude > DETECTION_THRESHOLD && vitesse_kmh > MIN_SPEED && !isNoise) {
+    consecutiveDetections++;
+  } else {
+    consecutiveDetections = 0;  // Réinitialiser si conditions non remplies
+  }
+
+  // Afficher uniquement après N confirmations consécutives
+  if (consecutiveDetections >= REQUIRED_CONFIRMATIONS) {
     Serial.println("========================================");
-    Serial.print("Fréquence Doppler: ");
+    Serial.print("Frequence Doppler: ");
     Serial.print(peakFrequency, 2);
     Serial.println(" Hz");
-    
+
     Serial.print("VITESSE: ");
     Serial.print(vitesse_kmh, 1);
     Serial.print(" km/h (");
     Serial.print(vitesse_ms, 2);
     Serial.println(" m/s)");
-    
+
     Serial.print("Signal: ");
     Serial.println(maxMagnitude, 0);
     Serial.println("========================================\n");
-  } else {
+
+    // Afficher sur l'écran LCD
+    displaySpeed(vitesse_kmh);
+
+  } else if (consecutiveDetections == 0 && !DEBUG_MODE) {
     // Mode silencieux - afficher un point pour montrer que ça tourne
     Serial.print(".");
-    delay(100);
   }
-  
-  delay(100);  // Petit délai entre les mesures
+  // Pas de delay : cycle le plus rapide possible pour objets rapides
 }
