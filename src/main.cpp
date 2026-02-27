@@ -1,9 +1,9 @@
 /*
- * Radar Doppler HB100 avec ESP32 (ADC interne)
+ * Radar Doppler CMD324 avec ESP32 (ADC interne)
  * Mesure de vitesse de ballon
  * 
  * Câblage:
- * HB100 IF Out → Ampli (AD620 + LM358) → ESP32 GPIO 36 (ADC1_CH0)
+ * CMD324 IF Out → Ampli (AD620 + LM358) → ESP32 GPIO 36 (ADC1_CH0)
  * Signal amplifié: 0-3.3V, centré à 1.65V (VCC/2)
  */
 
@@ -25,11 +25,11 @@
 // Mode Debug - Affiche toutes les valeurs (même faibles)
 #define DEBUG_MODE true          // Mettre false après calibration
 
-// HB100 opère à 10.525 GHz
+// CMD324 opère à 24.125 GHz (bande K)
 // Formule Doppler: fd = 2 * v * f0 / c
-// où v = vitesse (m/s), f0 = 10.525 GHz, c = 3e8 m/s
-// Coefficient: 70.166 Hz par m/s (ou 19.49 Hz par km/h)
-#define DOPPLER_COEFF 70.166     // Hz par m/s
+// où v = vitesse (m/s), f0 = 24.125 GHz, c = 3e8 m/s
+// Coefficient: 160.83 Hz par m/s (ou 44.68 Hz par km/h)
+#define DOPPLER_COEFF 160.83     // Hz par m/s
 
 // Variables FFT
 double vReal[SAMPLES];
@@ -44,7 +44,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("=== Radar Doppler HB100 ===");
+  Serial.println("=== Radar Doppler CMD324 (24.125 GHz) ===");
   Serial.println("Initialisation...");
   
   // Désactiver WiFi pour économiser ~100mA (utile si alimentation via ESP32 5V pin)
@@ -136,7 +136,7 @@ void loop() {
   }
   
   // Seuil de détection (ajuster selon vos besoins)
-  const double DETECTION_THRESHOLD = 1500.0;  // Baissé pour HB100 faible signal
+  const double DETECTION_THRESHOLD = 1000.0;  // CMD324 plus sensible que HB100
   const double MIN_SPEED = 2.0;               // Vitesse minimale en km/h
   
   // Mode DEBUG : afficher toutes les valeurs pour diagnostic
