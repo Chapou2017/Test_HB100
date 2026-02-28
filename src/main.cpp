@@ -67,49 +67,59 @@ const int REQUIRED_CONFIRMATIONS = 1;
 // --- Ecran LCD ST7565R GMG12864-06D (128x64, SPI) ---
 // Pins SPI hardware ESP32 (VSPI) : SCK=18, MOSI=23 (câblés directement)
 #define LCD_CS   5   // Chip Select
-#define LCD_DC   2   // Data/Command (A0 / RS)
+#define LCD_DC   2   // Data/Command (RS)
 #define LCD_RST  4   // Reset
-// Si l'affichage est vide/inversé, remplacer par : U8G2_ST7565_ERC12864_F_4W_HW_SPI
-U8G2_ST7565_NHD_C12864_F_4W_HW_SPI u8g2(U8G2_R0, LCD_CS, LCD_DC, LCD_RST);
+// Position verticale des textes (baseline, en pixels, portrait 64x128)
+#define LCD_Y_VALUE  72   // Baseline des chiffres de vitesse
+#define LCD_Y_UNIT   95   // Baseline de l'unité "km/h"
+// Constructeurs à essayer si écran noir (décommenter un seul à la fois) :
+// U8G2_ST7565_NHD_C12864_F_4W_HW_SPI    u8g2(U8G2_R1, LCD_CS, LCD_DC, LCD_RST);
+// U8G2_ST7565_NHD_C12864ALT_F_4W_HW_SPI u8g2(U8G2_R1, LCD_CS, LCD_DC, LCD_RST);
+// U8G2_ST7565_64128N_F_4W_HW_SPI        u8g2(U8G2_R1, LCD_CS, LCD_DC, LCD_RST);
+U8G2_ST7565_ERC12864_F_4W_HW_SPI       u8g2(U8G2_R1, LCD_CS, LCD_DC, LCD_RST);
+// En portrait : largeur=64px, hauteur=128px
 
 // -------------------------------------------------------
-// Affiche la vitesse en grand sur l'écran LCD
-// Mise en page : nombre centré (police 32px) + "km/h" en petit
+// Affiche la vitesse en portrait : chiffres max centrés + "km/h" dessous
+// Portrait : largeur=64px, hauteur=128px
 // -------------------------------------------------------
 void displaySpeed(double kmh) {
-  char numStr[8];
-  if (kmh < 100.0) {
-    dtostrf(kmh, 4, 1, numStr);  // ex: " 12.3"
-  } else {
-    dtostrf(kmh, 3, 0, numStr);  // ex: "120"
-  }
-  // Supprimer les espaces en début de chaîne
-  char* num = numStr;
-  while (*num == ' ') num++;
+  // Arrondi à l'entier pour maximiser la taille des chiffres
+  int spd = (int)(kmh + 0.5);
+  char num[5];
+  itoa(spd, num, 10);
 
   u8g2.clearBuffer();
 
-  // Vitesse en grand (police 32px, chiffres uniquement)
-  u8g2.setFont(u8g2_font_logisoso32_tn);
+  // Choisir la police selon le nombre de chiffres
+  // fub42 : ~28px/chiffre → 2 chiffres=56px ≤ 64px ✅  3 chiffres=84px ❌
+  // fub30 : ~20px/chiffre → 3 chiffres=60px ≤ 64px ✅
+  if (spd < 100) {
+    u8g2.setFont(u8g2_font_fub42_tn);
+  } else {
+    u8g2.setFont(u8g2_font_fub30_tn);
+  }
   int numWidth = u8g2.getStrWidth(num);
-  // Centrer le nombre, légèrement décalé à gauche pour laisser place à "km/h"
-  int numX = (128 - numWidth) / 2 - 12;
-  if (numX < 0) numX = 0;
-  u8g2.drawStr(numX, 48, num);
+  int numX = (64 - numWidth) / 2;  // centré dans 64px
+  u8g2.drawStr(numX, LCD_Y_VALUE, num);
 
-  // Unité "km/h" en petit, alignée à droite du nombre
-  u8g2.setFont(u8g2_font_helvR10_tf);
-  u8g2.drawStr(numX + numWidth + 4, 64, "km/h");
+  // Unité "km/h" centrée en dessous
+  u8g2.setFont(u8g2_font_helvB12_tf);
+  int unitWidth = u8g2.getStrWidth("km/h");
+  u8g2.drawStr((64 - unitWidth) / 2, LCD_Y_UNIT, "km/h");
 
   u8g2.sendBuffer();
 }
 
-// Ecran d'attente
+// Ecran d'attente : "- -" centré en grand
 void displayIdle() {
   u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_helvR10_tf);
-  u8g2.drawStr(16, 26, "Radar CDM324");
-  u8g2.drawStr(24, 48, "En attente...");
+  u8g2.setFont(u8g2_font_fub30_tf);
+  int w = u8g2.getStrWidth("- -");
+  u8g2.drawStr((64 - w) / 2, LCD_Y_VALUE, "- -");
+  u8g2.setFont(u8g2_font_helvB12_tf);
+  int unitWidth = u8g2.getStrWidth("km/h");
+  u8g2.drawStr((64 - unitWidth) / 2, LCD_Y_UNIT, "km/h");
   u8g2.sendBuffer();
 }
 
@@ -156,7 +166,7 @@ void setup() {
 
   // Initialisation écran LCD
   u8g2.begin();
-  u8g2.setContrast(0x28);  // Ajuster si trop clair/sombre (plage 0x00-0xFF)
+  u8g2.setContrast(0x08);  // GMG12864 : plage 0x00-0xFF, descendre si texte trop foncé
   displayIdle();
   Serial.println("Ecran LCD initialise");
 
