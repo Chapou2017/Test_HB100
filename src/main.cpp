@@ -21,7 +21,7 @@
 #define ADC_VREF 3.3            // Tension de référence
 
 // Configuration FFT
-#define SAMPLES 1024             // Nombre d'échantillons (puissance de 2)
+#define SAMPLES 512              // Nombre d'échantillons (puissance de 2) - 51ms/cycle
 #define SAMPLING_FREQUENCY 10000 // 10 kHz - Bien au-dessus de Nyquist pour 3 kHz
 
 // Mode Debug - Affiche toutes les valeurs (même faibles)
@@ -47,21 +47,27 @@ unsigned long lastSampleTime = 0;
 int consecutiveDetections = 0;
 const int REQUIRED_CONFIRMATIONS = 1;
 
+// Timer retour écran d'attente
+#define LCD_IDLE_TIMEOUT 5000   // ms avant retour à l'écran "- -"
+unsigned long lastSpeedTime = 0;
+bool speedDisplayed = false;
+double maxSpeedKmh = 0;  // Vitesse maxi de la session en cours
+
 // Fréquences parasites connues à ignorer (ex: bruit secteur 50 Hz et harmoniques)
 // 1770 Hz = bruit identifié, on exclut une plage autour
 #define NOISE_FREQ_MIN 1700.0   // Hz - début zone bruit identifiée
 #define NOISE_FREQ_MAX 1850.0   // Hz - fin zone bruit identifiée
 
 // --- Seuils de détection (calibrer ici) ---
-// Signal bruit < 1200, main ~1360+, ballon estimé > 3000
-#define DETECTION_THRESHOLD 1000.0   // Monter si faux positifs persistent
-#define MIN_SPEED           2.0       // Vitesse minimale en km/h
+#define MIN_ADC_RANGE       80    // Plage ADC mini pour déclencher la FFT (repos ~20pts)
+#define DETECTION_THRESHOLD 1000.0 // Signal FFT mini (monter si faux positifs)
+#define MIN_SPEED           2.0    // Vitesse minimale en km/h
 
 // --- Correction d'angle ---
 // Capteur placé à 30° de la trajectoire du ballon
 // v_réelle = v_mesurée / cos(angle)
 // cos(0°)=1.000  cos(15°)=0.966  cos(30°)=0.866  cos(45°)=0.707
-#define ANGLE_DEGREES       0.0
+#define ANGLE_DEGREES       0
 #define ANGLE_CORRECTION    (1.0 / cos(ANGLE_DEGREES * PI / 180.0))  // = 1.155 à 30°
 
 // --- Ecran LCD ST7565R GMG12864-06D (128x64, SPI) ---
@@ -200,7 +206,7 @@ void loop() {
   // PRÉ-FILTRE : vérifier la plage ADC avant de lancer la FFT
   // Au repos : plage ~40-60 pts | Avec mouvement : plage ~80+ pts
   int adcRange = maxADC - minADC;
-  const int MIN_ADC_RANGE = 80;  // Seuil : en dessous = pas de mouvement détecté
+  // MIN_ADC_RANGE défini en haut du fichier
 
   if (DEBUG_MODE) {
     Serial.print("ADC: [");
@@ -214,7 +220,12 @@ void loop() {
   if (adcRange < MIN_ADC_RANGE) {
     if (DEBUG_MODE) Serial.println(" | Pas de mouvement");
     else Serial.print(".");
-    // Pas de delay ici : cycle rapide pour ne pas rater un objet rapide
+    // Vérifier le timer même sans mouvement
+    if (speedDisplayed && (millis() - lastSpeedTime > LCD_IDLE_TIMEOUT)) {
+      maxSpeedKmh = 0;  // Reset du max pour la prochaine session
+      displayIdle();
+      speedDisplayed = false;
+    }
     return;  // Sortir immédiatement, pas de FFT
   }
 
@@ -292,12 +303,27 @@ void loop() {
     Serial.println(maxMagnitude, 0);
     Serial.println("========================================\n");
 
-    // Afficher sur l'écran LCD
-    displaySpeed(vitesse_kmh);
+    // Conserver et afficher uniquement la vitesse maximale
+    if (vitesse_kmh > maxSpeedKmh) {
+      maxSpeedKmh = vitesse_kmh;
+      displaySpeed(maxSpeedKmh);
+      Serial.print(">>> NOUVEAU MAX: ");
+      Serial.print(maxSpeedKmh, 1);
+      Serial.println(" km/h");
+    }
+    lastSpeedTime = millis();
+    speedDisplayed = true;
 
   } else if (consecutiveDetections == 0 && !DEBUG_MODE) {
     // Mode silencieux - afficher un point pour montrer que ça tourne
     Serial.print(".");
+  }
+
+  // Retour à l'écran d'attente après LCD_IDLE_TIMEOUT ms sans nouvelle vitesse
+  if (speedDisplayed && (millis() - lastSpeedTime > LCD_IDLE_TIMEOUT)) {
+    maxSpeedKmh = 0;  // Reset du max pour la prochaine session
+    displayIdle();
+    speedDisplayed = false;
   }
   // Pas de delay : cycle le plus rapide possible pour objets rapides
 }
